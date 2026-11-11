@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+google-genai
+pydantic>=2,<3
+Pillow
+python-dotenv

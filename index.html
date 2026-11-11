@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StyleLens</title>
+<style>
+:root{font-family:Inter,system-ui,sans-serif;color:#25213a;background:#f8f7fc}
+body{max-width:1050px;margin:auto;padding:32px 20px}
+h1{font-size:clamp(2rem,6vw,4rem);margin:0;color:#4e36a3}
+main{display:grid;grid-template-columns:minmax(260px,1fr) 2fr;gap:24px}
+.panel,article{background:white;border:1px solid #e8e3f1;border-radius:18px;padding:20px;margin-bottom:14px}
+label,button,input{font:inherit} input[type=text]{width:100%;box-sizing:border-box;padding:10px}
+button,a.shop{border:0;border-radius:9px;padding:10px 13px;font-weight:600}
+button{background:#5e3de0;color:white;cursor:pointer;margin:12px 0}
+button:disabled{opacity:.6} a.shop{display:inline-block;background:#ede7ff;color:#372385;margin:0 6px 6px 0}
+fieldset{border:0;padding:0;margin:16px 0}fieldset label{display:block;margin:5px 0}
+progress,img{width:100%}img{max-height:280px;object-fit:contain;margin-top:12px}
+[hidden]{display:none!important}small{color:#514964}
+@media(max-width:670px){main{grid-template-columns:1fr}}
+#manual-form {
+  margin-top: 24px;
+}
+
+#manual-form label {
+  display: block;
+  margin-bottom: 8px;
+}
+</style>
+</head>
+<body>
+<header><h1>StyleLens</h1><p>Find similar styles from an outfit photo.</p></header>
+<main>
+<section class="panel">
+<form id="photo-form">
+<label for="photo">Outfit photo</label>
+<input type="file" id="photo" accept="image/*" required>
+<img id="preview" alt="Selected outfit" hidden>
+<fieldset id="shops"><legend>Stores</legend></fieldset>
+<button id="analyze">Decode my outfit</button>
+<small style="display: block;">Your resized photo is sent to Google Gemini.</small>
+</form>
+
+<form id="manual-form">
+  <label for="phrase">Or,<br>search by description</label>
+  <input type="text" id="phrase" placeholder="Black pleated tennis skirt" required>
+  <button>Create shopping links</button>
+</form>
+</section>
+<section aria-label="Search results">
+<p id="status" role="status"></p>
+<progress id="loading" aria-label="Analyzing photo" hidden></progress>
+<div id="results"><p>Upload an outfit photo or enter a description.</p></div>
+</section>
+</main>
+<script>
+const shops = {
+  "Amazon Canada": q => "https://www.amazon.ca/s?" + new URLSearchParams({k:q}),
+  "eBay Canada": q => "https://www.ebay.ca/sch/i.html?" + new URLSearchParams({_nkw:q}),
+  "SHEIN": q => "https://ca.shein.com/pdsearch/" + encodeURIComponent(q) + "/",
+  "Temu": q => "https://www.temu.com/ca/search_result.html?" + new URLSearchParams({search_key:q}),
+  "Walmart Canada": q => "https://www.walmart.ca/search?" + new URLSearchParams({q})
+};
+const byId = id => document.getElementById(id);
+const photo = byId("photo");
+const preview = byId("preview");
+const results = byId("results");
+const status = byId("status");
+let items = null, phrase = "", previewUrl, pending, revision = 0;
+
+function add(parent, tag, value) {
+  const node = document.createElement(tag);
+  node.textContent = value;
+  parent.append(node);
+  return node;
+}
+for (const name of Object.keys(shops)) {
+  const label = add(byId("shops"), "label", "");
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.value = name;
+  checkbox.checked = ["Amazon Canada", "eBay Canada", "Walmart Canada"].includes(name);
+  label.append(checkbox, " " + name);
+}
+function render() {
+  results.replaceChildren();
+  if (items === null && !phrase) {
+    add(results, "p", "Upload an outfit photo or enter a description.");
+    return;
+  }
+  if (items !== null) {
+    add(results, "h2", `Found ${items.length} clothing ${items.length === 1 ? "item" : "items"}`);
+    if (!items.length) add(results, "p", "Try a closer or brighter photo.");
+  }
+  const cards = items ?? [{name: phrase, search_query: phrase}];
+  const selected = [...document.querySelectorAll("#shops input:checked")];
+  cards.forEach((item, index) => {
+    const card = add(results, "article", "");
+    add(card, "h3", items === null ? item.name : `${index + 1}. ${item.name}`);
+    if (item.details) add(card, "p", item.details);
+    const query = item.search_query.trim() || `${item.colour} ${item.name}`;
+    if (!selected.length) add(card, "p", "Choose a store to see shopping links.");
+    for (const store of selected) {
+      const link = add(card, "a", store.value + " ↗");
+      link.className = "shop";
+      link.href = shops[store.value](query);
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+    }
+  });
+}
+function stopAnalysis() {
+  revision++;
+  pending?.abort();
+  byId("loading").hidden = true;
+  byId("analyze").disabled = false;
+  status.textContent = "";
+}
+photo.addEventListener("change", () => {
+  stopAnalysis();
+  items = null;
+  phrase = "";
+  if (previewUrl) URL.revokeObjectURL(previewUrl);
+  preview.hidden = !photo.files.length;
+  previewUrl = photo.files.length ? URL.createObjectURL(photo.files[0]) : undefined;
+  if (previewUrl) preview.src = previewUrl;
+  else preview.removeAttribute("src");
+  render();
+});
+byId("shops").addEventListener("change", render);
+byId("manual-form").addEventListener("submit", event => {
+  event.preventDefault();
+  stopAnalysis();
+  phrase = byId("phrase").value.trim();
+  items = null;
+  render();
+});
+async function toJpeg(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    image.src = url;
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    const scale = Math.min(1, 768 / Math.max(image.naturalWidth, image.naturalHeight));
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", 0.85));
+    if (!blob || blob.size > 2_000_000) throw new Error("Could not resize the photo.");
+    return blob;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+byId("photo-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  if (!photo.files.length) return;
+  stopAnalysis();
+  const request = revision;
+  pending = new AbortController();
+  byId("loading").hidden = false;
+  byId("analyze").disabled = true;
+  status.textContent = "Analyzing your photo…";
+  items = null;
+  phrase = "";
+  render();
+  try {
+    const blob = await toJpeg(photo.files[0]);
+    if (request !== revision) return;
+    const response = await fetch("/api/analyze", {
+      method: "POST",
+      body: blob,
+      headers: {"Content-Type": "image/jpeg"},
+      signal: pending.signal
+    });
+    const data = await response.json().catch(() => ({}));
+    if (request !== revision) return;
+    if (!response.ok) throw new Error(data.detail || `Analysis failed (HTTP ${response.status}).`);
+    items = data.items;
+    status.textContent = "";
+    render();
+  } catch (error) {
+    if (request === revision) status.textContent = error.message + " You can also search by description.";
+  } finally {
+    if (request === revision) {
+      byId("loading").hidden = true;
+      byId("analyze").disabled = false;
+    }
+  }
+});
+</script>
+</body>
+</html>
